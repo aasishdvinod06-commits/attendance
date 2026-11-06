@@ -1,1 +1,429 @@
+name: Build Attendance APK
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.9
+      - name: Generate project files
+        run: |
+          rm -rf attendance
+          mkdir -p attendance/app/src/main/java/com/sosuke/attendance
+          cd attendance
 
+          cat > settings.gradle.kts <<'EOF'
+          pluginManagement {
+              repositories { google(); mavenCentral(); gradlePluginPortal() }
+          }
+          dependencyResolutionManagement {
+              repositories { google(); mavenCentral() }
+          }
+          rootProject.name = "Attendance"
+          include(":app")
+          EOF
+
+          cat > build.gradle.kts <<'EOF'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          EOF
+
+          cat > gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx2g
+          android.useAndroidX=false
+          EOF
+
+          cat > app/build.gradle.kts <<'EOF'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+          android {
+              namespace = "com.sosuke.attendance"
+              compileSdk = 34
+              defaultConfig {
+                  applicationId = "com.sosuke.attendance"
+                  minSdk = 26
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions { jvmTarget = "17" }
+          }
+          EOF
+
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <application android:label="Attendance" android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+                  <activity android:name=".MainActivity" android:exported="true"
+                      android:windowSoftInputMode="adjustResize">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN"/>
+                          <category android:name="android.intent.category.LAUNCHER"/>
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          cat > app/src/main/java/com/sosuke/attendance/MainActivity.kt <<'EOF'
+          package com.sosuke.attendance
+
+          import android.app.Activity
+          import android.app.AlertDialog
+          import android.content.Context
+          import android.graphics.Color
+          import android.graphics.Typeface
+          import android.graphics.drawable.GradientDrawable
+          import android.os.Bundle
+          import android.text.InputType
+          import android.view.Gravity
+          import android.view.View
+          import android.view.ViewGroup
+          import android.widget.EditText
+          import android.widget.LinearLayout
+          import android.widget.ScrollView
+          import android.widget.TextView
+          import android.widget.Toast
+          import org.json.JSONArray
+          import org.json.JSONObject
+          import java.util.Locale
+
+          class Subject(var name: String, var attended: Int, var total: Int, var last: String = "")
+
+          object Store {
+              private fun sp(c: Context) = c.getSharedPreferences("att", Context.MODE_PRIVATE)
+              fun minPct(c: Context): Int = sp(c).getInt("min", 75)
+              fun setMin(c: Context, v: Int) = sp(c).edit().putInt("min", v).apply()
+              fun load(c: Context): MutableList<Subject> {
+                  val out = mutableListOf<Subject>()
+                  try {
+                      val arr = JSONArray(sp(c).getString("subjects", "[]"))
+                      for (i in 0 until arr.length()) {
+                          val o = arr.getJSONObject(i)
+                          out.add(Subject(o.getString("n"), o.getInt("a"), o.getInt("t"), o.optString("l", "")))
+                      }
+                  } catch (e: Exception) { }
+                  return out
+              }
+              fun save(c: Context, list: List<Subject>) {
+                  val arr = JSONArray()
+                  for (s in list) {
+                      val o = JSONObject()
+                      o.put("n", s.name)
+                      o.put("a", s.attended)
+                      o.put("t", s.total)
+                      o.put("l", s.last)
+                      arr.put(o)
+                  }
+                  sp(c).edit().putString("subjects", arr.toString()).apply()
+              }
+          }
+
+          class MainActivity : Activity() {
+              private val BG = Color.BLACK
+              private val CELL = Color.parseColor("#1C1C1E")
+              private val SEP = Color.parseColor("#38383A")
+              private val MUTED = Color.parseColor("#8E8E93")
+              private val GREEN = Color.parseColor("#34C759")
+              private val RED = Color.parseColor("#FF453A")
+              private val ORANGE = Color.parseColor("#FF9F0A")
+              private val BLUE = Color.parseColor("#0A84FF")
+
+              private lateinit var subjects: MutableList<Subject>
+              private lateinit var sv: ScrollView
+
+              private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+
+              private fun rounded(color: Int, r: Int): GradientDrawable {
+                  val g = GradientDrawable()
+                  g.setColor(color)
+                  g.cornerRadius = dp(r).toFloat()
+                  return g
+              }
+
+              private fun oval(color: Int): GradientDrawable {
+                  val g = GradientDrawable()
+                  g.shape = GradientDrawable.OVAL
+                  g.setColor(color)
+                  return g
+              }
+
+              private fun txt(t: String, size: Float, color: Int, bold: Boolean): TextView {
+                  val v = TextView(this)
+                  v.text = t
+                  v.textSize = size
+                  v.setTextColor(color)
+                  if (bold) v.setTypeface(v.typeface, Typeface.BOLD)
+                  return v
+              }
+
+              private fun lpm(top: Int, bottom: Int): LinearLayout.LayoutParams {
+                  val p = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                  p.topMargin = dp(top)
+                  p.bottomMargin = dp(bottom)
+                  return p
+              }
+
+              private fun card(): LinearLayout {
+                  val c = LinearLayout(this)
+                  c.orientation = LinearLayout.VERTICAL
+                  c.background = rounded(CELL, 16)
+                  c.setPadding(dp(16), dp(14), dp(16), dp(14))
+                  return c
+              }
+
+              private fun fmt(v: Double): String = String.format(Locale.US, "%.1f%%", v)
+
+              private fun pct(s: Subject): Double = if (s.total == 0) 100.0 else s.attended * 100.0 / s.total
+
+              private fun meets(s: Subject, m: Int): Boolean = 100 * s.attended >= m * s.total
+
+              private fun canSkip(s: Subject, m: Int): Int {
+                  val v = 100 * s.attended - m * s.total
+                  return if (v < 0) 0 else v / m
+              }
+
+              private fun mustAttend(s: Subject, m: Int): Int {
+                  val need = m * s.total - 100 * s.attended
+                  return if (need <= 0) 0 else (need + (100 - m) - 1) / (100 - m)
+              }
+
+              private fun plural(n: Int): String = if (n == 1) "class" else "classes"
+
+              private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
+
+              private fun commit() {
+                  Store.save(this, subjects)
+                  render()
+              }
+
+              override fun onCreate(b: Bundle?) {
+                  super.onCreate(b)
+                  window.statusBarColor = BG
+                  window.navigationBarColor = BG
+                  subjects = Store.load(this)
+                  sv = ScrollView(this)
+                  sv.setBackgroundColor(BG)
+                  setContentView(sv)
+                  render()
+              }
+
+              private fun button(label: String, color: Int, onClick: () -> Unit): TextView {
+                  val v = txt(label, 15f, color, true)
+                  v.gravity = Gravity.CENTER
+                  v.background = rounded(Color.argb(0x2E, Color.red(color), Color.green(color), Color.blue(color)), 12)
+                  v.setOnClickListener { onClick() }
+                  return v
+              }
+
+              private fun render() {
+                  val m = Store.minPct(this)
+                  val root = LinearLayout(this)
+                  root.orientation = LinearLayout.VERTICAL
+                  root.setPadding(dp(16), dp(56), dp(16), dp(40))
+
+                  val head = LinearLayout(this)
+                  head.gravity = Gravity.CENTER_VERTICAL
+                  head.addView(txt("Attendance", 34f, Color.WHITE, true),
+                      LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                  val plus = txt("+", 26f, Color.WHITE, false)
+                  plus.gravity = Gravity.CENTER
+                  plus.background = oval(BLUE)
+                  plus.setOnClickListener { editDialog(null) }
+                  head.addView(plus, LinearLayout.LayoutParams(dp(40), dp(40)))
+                  root.addView(head, lpm(0, 18))
+
+                  var totA = 0
+                  var totT = 0
+                  for (s in subjects) { totA += s.attended; totT += s.total }
+                  val overall = if (totT == 0) 100.0 else totA * 100.0 / totT
+                  val overallColor = when {
+                      totT == 0 -> MUTED
+                      100 * totA < m * totT -> RED
+                      overall < m + 3 -> ORANGE
+                      else -> GREEN
+                  }
+                  val sc = card()
+                  sc.addView(txt("OVERALL", 12f, MUTED, false))
+                  sc.addView(txt(if (totT == 0) "--" else fmt(overall), 44f, overallColor, true))
+                  sc.addView(txt("$totA of $totT classes attended", 14f, MUTED, false))
+                  val minRow = txt("Minimum required: $m%   \u203A", 15f, BLUE, false)
+                  minRow.setPadding(0, dp(12), 0, 0)
+                  minRow.setOnClickListener { minDialog() }
+                  sc.addView(minRow)
+                  root.addView(sc, lpm(0, 18))
+
+                  if (subjects.isEmpty()) {
+                      val e = card()
+                      e.addView(txt("No subjects yet", 17f, Color.WHITE, true))
+                      e.addView(txt("Tap + at the top to add your first subject. Enter how many classes you have attended and how many were held so far.", 14f, MUTED, false))
+                      root.addView(e, lpm(0, 0))
+                  }
+
+                  for (s in subjects) {
+                      val ok = meets(s, m)
+                      val skip = canSkip(s, m)
+                      val need = mustAttend(s, m)
+                      val col = when {
+                          s.total == 0 -> MUTED
+                          !ok -> RED
+                          skip == 0 -> ORANGE
+                          else -> GREEN
+                      }
+                      val c = card()
+                      val top = LinearLayout(this)
+                      top.gravity = Gravity.CENTER_VERTICAL
+                      top.addView(txt(s.name, 19f, Color.WHITE, true),
+                          LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                      top.addView(txt(if (s.total == 0) "--" else fmt(pct(s)), 22f, col, true))
+                      top.setOnClickListener { editDialog(s) }
+                      c.addView(top)
+                      c.addView(txt("${s.attended} of ${s.total} classes", 14f, MUTED, false))
+
+                      val bar = LinearLayout(this)
+                      bar.weightSum = 100f
+                      bar.background = rounded(SEP, 3)
+                      val fillW = pct(s).toFloat().coerceIn(0f, 100f)
+                      val fill = View(this)
+                      fill.background = rounded(col, 3)
+                      bar.addView(fill, LinearLayout.LayoutParams(0, dp(6), fillW))
+                      val bp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(6))
+                      bp.topMargin = dp(12)
+                      c.addView(bar, bp)
+
+                      val msg = when {
+                          s.total == 0 -> "Mark your first class below"
+                          ok && skip == 0 -> "At the limit. Don't miss the next class"
+                          ok -> "You can skip $skip more ${plural(skip)}"
+                          else -> "Attend the next $need ${plural(need)} in a row to reach $m%"
+                      }
+                      val st = txt(msg, 15f, col, false)
+                      st.setPadding(0, dp(10), 0, dp(12))
+                      c.addView(st)
+
+                      val btns = LinearLayout(this)
+                      val present = button("Present", GREEN) {
+                          s.attended++
+                          s.total++
+                          s.last = "p"
+                          commit()
+                      }
+                      val absent = button("Absent", RED) {
+                          s.total++
+                          s.last = "a"
+                          commit()
+                      }
+                      val undo = button("Undo", MUTED) {
+                          if (s.last == "p" && s.attended > 0 && s.total > 0) { s.attended--; s.total-- }
+                          else if (s.last == "a" && s.total > 0) s.total--
+                          s.last = ""
+                          commit()
+                      }
+                      val w1 = LinearLayout.LayoutParams(0, dp(44), 1f)
+                      w1.setMargins(0, 0, dp(6), 0)
+                      val w2 = LinearLayout.LayoutParams(0, dp(44), 1f)
+                      w2.setMargins(0, 0, dp(6), 0)
+                      val w3 = LinearLayout.LayoutParams(0, dp(44), 0.6f)
+                      btns.addView(present, w1)
+                      btns.addView(absent, w2)
+                      btns.addView(undo, w3)
+                      c.addView(btns)
+                      root.addView(c, lpm(0, 12))
+                  }
+
+                  val y = sv.scrollY
+                  sv.removeAllViews()
+                  sv.addView(root)
+                  sv.post { sv.scrollTo(0, y) }
+              }
+
+              private fun field(hint: String, value: String, number: Boolean): EditText {
+                  val e = EditText(this)
+                  e.hint = hint
+                  e.setText(value)
+                  e.inputType = if (number) InputType.TYPE_CLASS_NUMBER
+                      else InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_WORDS
+                  return e
+              }
+
+              private fun editDialog(s: Subject?) {
+                  val box = LinearLayout(this)
+                  box.orientation = LinearLayout.VERTICAL
+                  box.setPadding(dp(20), dp(8), dp(20), 0)
+                  val n = field("Subject name", s?.name ?: "", false)
+                  val a = field("Classes attended so far", s?.attended?.toString() ?: "", true)
+                  val t = field("Total classes held so far", s?.total?.toString() ?: "", true)
+                  box.addView(n)
+                  box.addView(a)
+                  box.addView(t)
+                  val b = AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                      .setTitle(if (s == null) "Add subject" else "Edit subject")
+                      .setView(box)
+                      .setPositiveButton("Save") { _, _ ->
+                          val name = n.text.toString().trim()
+                          val attV = a.text.toString().toIntOrNull() ?: 0
+                          val totV = t.text.toString().toIntOrNull() ?: 0
+                          if (name.isEmpty()) toast("Enter a subject name")
+                          else if (attV > totV) toast("Attended can't be more than total")
+                          else {
+                              if (s == null) subjects.add(Subject(name, attV, totV))
+                              else {
+                                  s.name = name
+                                  s.attended = attV
+                                  s.total = totV
+                                  s.last = ""
+                              }
+                              commit()
+                          }
+                      }
+                      .setNegativeButton("Cancel", null)
+                  if (s != null) b.setNeutralButton("Delete") { _, _ ->
+                      subjects.remove(s)
+                      commit()
+                  }
+                  b.show()
+              }
+
+              private fun minDialog() {
+                  val box = LinearLayout(this)
+                  box.orientation = LinearLayout.VERTICAL
+                  box.setPadding(dp(20), dp(8), dp(20), 0)
+                  val e = field("Minimum attendance %", Store.minPct(this).toString(), true)
+                  box.addView(e)
+                  AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                      .setTitle("Minimum attendance %")
+                      .setView(box)
+                      .setPositiveButton("Save") { _, _ ->
+                          val v = e.text.toString().toIntOrNull() ?: 0
+                          if (v in 1..99) { Store.setMin(this, v); render() }
+                          else toast("Enter a number from 1 to 99")
+                      }
+                      .setNegativeButton("Cancel", null)
+                      .show()
+              }
+          }
+          EOF
+      - name: Build APK
+        run: |
+          cd attendance
+          gradle assembleDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Attendance-apk
+          path: attendance/app/build/outputs/apk/debug/app-debug.apk
